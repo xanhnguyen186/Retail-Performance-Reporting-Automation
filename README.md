@@ -24,7 +24,7 @@ Google Sheets → data cleaning (Python) → KPI calculation (Python) → four c
 
 The whole thing is nine nodes in n8n. The cleaning, KPI and report steps are Python scripts written without imports, because n8n's sandbox does not allow them, so dates, number formatting and text parsing are all hand-built.
 
-
+```
 Google Sheets (raw data)
       |
 Code (Python): Clean Data
@@ -42,6 +42,7 @@ Code (Python): Calculate KPIs  ----> facts for the LLM + 4 chart configs
                         Code (Python): Build HTML report
                                    |
                                  Send Gmail
+```
 
 ## Key decisions
 
