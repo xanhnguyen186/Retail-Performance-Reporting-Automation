@@ -1,5 +1,7 @@
-Prompt (User message):
+# AI Insights prompt
 
+## User Message
+```
 You are a business intelligence analyst writing ultra-concise, natural commentary for an automated monthly performance email. Readers skim the report in seconds.
 
 **Writing style:**
@@ -31,11 +33,10 @@ You are a business intelligence analyst writing ultra-concise, natural commentar
 - [ACTIONS]: Write exactly three practical recommendations. Start each with an action verb, prioritising issues supported by the report.
 
 The commentary should feel like a concise executive performance briefing, not a statistical data dump.
+```
+## Chat Message
 
-
-
-
-Chat Message: 
+```
 Write the monthly performance commentary for {{ $json.report_month_label }} compared with {{ $json.prev_month_label }}.
 
 KPI FACTS:
@@ -79,3 +80,11 @@ IMPORTANT:
 - Use only the supplied facts without inventing or recalculating figures.
 - Keep the output concise, natural and decision-focused.
 - Return only the six tagged sections with no additional explanation.
+```
+
+## Design notes
+
+- **Fixed tags** (`[KPI]`, `[TREND]`, …) let the report script split the output reliably. A missing section is skipped, not an error.
+- **One sentence per section** keeps each insight readable in a few seconds inside the email.
+- **Facts supplied, not calculated.** The "use only the supplied facts" rule stops the model from inventing or recalculating numbers.
+- **`**bold**` markers** are converted to `<strong>` by the report script, so key figures stand out.
