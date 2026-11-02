@@ -2,7 +2,7 @@
 
 **An end-to-end pipeline that turns raw retail sales data into a designed monthly performance email, with no manual work.**
 
-![Email report and n8n workflow](/image/email_preview_and_workflow.png)
+![Email report and n8n workflow](image/email_preview_and_workflow.png)
 
 *Left and centre: the email the pipeline sends. Right: the n8n workflow behind it.*
 
@@ -23,6 +23,25 @@ Monthly performance reporting is repetitive. Someone exports data, cleans it, re
 Google Sheets → data cleaning (Python) → KPI calculation (Python) → four charts (QuickChart) and written insights (Gemini) → HTML report (Python) → Gmail
 
 The whole thing is nine nodes in n8n. The cleaning, KPI and report steps are Python scripts written without imports, because n8n's sandbox does not allow them, so dates, number formatting and text parsing are all hand-built.
+
+
+Google Sheets (raw data)
+      |
+Code (Python): Clean Data
+      |
+Code (Python): Calculate KPIs  ----> facts for the LLM + 4 chart configs
+      |                                   |
+      |            +----------------------+----------------------+
+      |            |                      |                      |
+      |      HTTP: QuickChart x4     Gemini LLM chain       (KPI row)
+      |      (monthly, category,     (tagged insights)           |
+      |       subcategory, store)           |                    |
+      |            |                        |                    |
+      +------------+------------ Merge (6 inputs) ---------------+
+                                   |
+                        Code (Python): Build HTML report
+                                   |
+                                 Send Gmail
 
 ## Key decisions
 
