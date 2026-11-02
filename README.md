@@ -2,7 +2,7 @@
 
 An n8n workflow that reads a retail sales table from Google Sheets, cleans it, calculates month-over-month KPIs, draws four charts, asks an LLM to write short insights, and emails a designed HTML report. It runs with no manual steps.
 
-![Email report preview](email.PNG)
+![Email report preview](email_preview_and_workflow.png)
 <!-- TODO: replace with a screenshot of the final email -->
 
 ## What the email contains
