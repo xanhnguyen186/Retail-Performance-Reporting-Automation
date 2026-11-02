@@ -17,7 +17,6 @@ Monthly performance reporting is repetitive. Someone exports data, cleans it, re
 - **4 charts**, each with a one-line takeaway: revenue trend, revenue by category, top 5 subcategories, revenue by store
 - **3 recommended actions** based on what moved
 
-December 2024: net revenue 1,304,085 (+52.3%), gross margin 20.3% (-5.0 pts), 366 orders (+8.0%), return rate 7.7% (-0.6 pts).
 
 ## How it works
 
@@ -45,12 +44,8 @@ Workflow automation (n8n) · Python for data cleaning and KPI logic · Google Sh
 
 ## Data and limitations
 
-Dataset: [Lotus Group Retail Star Schema BI](https://www.kaggle.com/datasets/abdelrahmanmahmoud22/lotus-group-retail-star-schema-bi) (Kaggle). It is a fictional retailer with one year of orders in EGP, so the numbers are for demonstration. Month-over-month changes are not adjusted for seasonality.
+Dataset: [Lotus Group Retail Star Schema BI](https://www.kaggle.com/datasets/abdelrahmanmahmoud22/lotus-group-retail-star-schema-bi) (Kaggle). It is a fictional retailer with one year of orders in $, so the numbers are for demonstration. Month-over-month changes are not adjusted for seasonality.
 
 ## Code
 
 Scripts are in [`scripts/`](scripts/), the LLM prompt is in [`prompts/`](prompts/), and the workflow export is in [`workflow/`](workflow/).
-
-## Author
-
-Xanh · [GitHub](https://github.com/YOUR-USERNAME) · [LinkedIn](https://linkedin.com/in/YOUR-PROFILE)
