@@ -1,0 +1,418 @@
+{
+  "name": "Retail Performance Reporting Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        864,
+        224
+      ],
+      "id": "af525d92-8fff-4357-91dd-da03b2bce602",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "Q56DVN4OMtMasdou",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 6
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1360,
+        320
+      ],
+      "id": "4246012a-e836-4eee-83af-4ff4d68c4e8d",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "documentId": {
+          "__rl": true,
+          "value": "1WKcr3f3LedoD-MHeRtE1KovXS4-nSS9FtBU-1dLH2F4",
+          "mode": "list",
+          "cachedResultName": "Lotus Group",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1WKcr3f3LedoD-MHeRtE1KovXS4-nSS9FtBU-1dLH2F4/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 706902191,
+          "mode": "list",
+          "cachedResultName": "orders_2024",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1WKcr3f3LedoD-MHeRtE1KovXS4-nSS9FtBU-1dLH2F4/edit#gid=706902191"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [
+        -112,
+        336
+      ],
+      "id": "7ddcd0da-b291-47bf-a5bd-62ce0363e0ba",
+      "name": "Raw Data from Google Sheets",
+      "credentials": {
+        "googleSheetsTriggerOAuth2Api": {
+          "id": "H8GH3CWSAJdZ5CpH",
+          "name": "Google Sheets Trigger account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "# n8n Code node (Python) - mode: \"Run Once for All Items\"\n# Cleans fact_orders_2024: trims text, fixes blanks, validates amounts, de-duplicates,\n# and adds the columns needed to track performance (net revenue/profit, week & month keys).\n# No imports needed (n8n's sandbox blocks them).\n\nMISSING_EMPLOYEE = \"UNASSIGNED\"\nHIGH_VALUE_THRESHOLD = 50000          # flag only (these orders look legitimate: normal margins)\n\ndef s(v):\n    return \"\" if v is None else str(v).strip()\n\ndef to_num(v):\n    t = s(v).replace(\",\", \"\").replace(\"$\", \"\").replace(\"EGP\", \"\").strip()\n    try:\n        return float(t)\n    except ValueError:\n        return None\n\n# ---------- date helpers (no datetime available) ----------\ndef days_from_civil(y, m, d):\n    y -= 1 if m <= 2 else 0\n    era = y // 400\n    yoe = y - era * 400\n    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1\n    doe = yoe * 365 + yoe // 4 - yoe // 100 + doy\n    return era * 146097 + doe - 719468\n\ndef civil_from_days(z):\n    z += 719468\n    era = z // 146097\n    doe = z - era * 146097\n    yoe = (doe - doe // 1460 + doe // 36524 - doe // 146096) // 365\n    y = yoe + era * 400\n    doy = doe - (365 * yoe + yoe // 4 - yoe // 100)\n    mp = (5 * doy + 2) // 153\n    d = doy - (153 * mp + 2) // 5 + 1\n    m = mp + 3 if mp < 10 else mp - 9\n    return (y + (1 if m <= 2 else 0), m, d)\n\ndef valid_ymd(y, m, d):\n    return 1900 <= y <= 2100 and 1 <= m <= 12 and 1 <= d <= 31\n\ndef parse_date(v):\n    \"\"\"-> (y, m, d) or None. Handles 2024-01-31, 2024-01-31T00:00:00Z, 31/01/2024, Excel serial numbers.\"\"\"\n    raw = s(v)\n    if not raw:\n        return None\n    t = raw.replace(\"T\", \" \").split(\" \")[0]\n    for sep in (\"-\", \"/\"):\n        p = t.split(sep)\n        if len(p) == 3 and all(x.isdigit() for x in p):\n            if len(p[0]) == 4 and valid_ymd(int(p[0]), int(p[1]), int(p[2])):\n                return int(p[0]), int(p[1]), int(p[2])\n            if len(p[2]) == 4 and valid_ymd(int(p[2]), int(p[1]), int(p[0])):   # DD/MM/YYYY\n                return int(p[2]), int(p[1]), int(p[0])\n    if raw.replace(\".\", \"\", 1).isdigit() and 20000 < float(raw) < 60000:       # Excel serial\n        ymd = civil_from_days(int(float(raw)) - 25569)\n        if valid_ymd(*ymd):\n            return ymd\n    return None\n\ndef fmt(y, m, d):\n    return str(y) + \"-\" + str(m).zfill(2) + \"-\" + str(d).zfill(2)\n\nSTATUS_MAP = {\"completed\": \"Completed\", \"complete\": \"Completed\",\n              \"returned\": \"Returned\", \"return\": \"Returned\",\n              \"cancelled\": \"Cancelled\", \"canceled\": \"Cancelled\", \"cancel\": \"Cancelled\"}\n\nseen = set()\noutput = []\n\nfor item in _items:\n    r = item[\"json\"]\n\n    # 1. De-duplicate on order_id (keep first)\n    oid = s(r.get(\"order_id\")).upper()\n    if not oid or oid in seen:\n        continue\n    seen.add(oid)\n\n    # 2. Dates: normalise order_date, rebuild date_id, add week/month keys\n    ymd = parse_date(r.get(\"order_date\"))\n    if not ymd:\n        continue                                   # an order with no usable date can't be tracked\n    y, m, d = ymd\n    z = days_from_civil(y, m, d)\n    wy, wm, wd = civil_from_days(z - (z + 3) % 7)  # Monday of that week\n\n    # 3. Amounts: must be numeric\n    rev = to_num(r.get(\"total_revenue\"))\n    cost = to_num(r.get(\"total_cost\"))\n    if rev is None or cost is None:\n        continue                                   # drop rows with unusable amounts (none in current file)\n    rev, cost = round(rev, 2), round(cost, 2)\n\n    # 4. Text columns\n    status = STATUS_MAP.get(s(r.get(\"order_status\")).lower(), s(r.get(\"order_status\")).title())\n    payment = s(r.get(\"payment_method\"))           # fixes '  Cash  ' -> 'Cash'\n    employee = s(r.get(\"employee_id\")).upper()\n    emp_missing = employee == \"\"\n    if emp_missing:\n        employee = MISSING_EMPLOYEE                # keep the order; revenue still counts\n\n    # 4b. Product columns (from the Google Sheets lookup join). Blank -> \"Unknown\" so charts never break.\n    product_id = s(r.get(\"product_id\")).upper()\n    product_name = s(r.get(\"product_name\"))\n    category = s(r.get(\"category\")).title() or \"Unknown\"\n    subcategory = s(r.get(\"subcategory\")).title() or \"Unknown\"\n\n    # 5. Performance fields. Only Completed orders count toward revenue/profit.\n    completed = status == \"Completed\"\n    profit = round(rev - cost, 2)\n\n    output.append({\"json\": {\n        \"order_id\": oid,\n        \"order_date\": fmt(y, m, d),\n        \"date_id\": int(str(y) + str(m).zfill(2) + str(d).zfill(2)),\n        \"year_month\": str(y) + \"-\" + str(m).zfill(2),\n        \"week_start\": fmt(wy, wm, wd),\n        \"customer_id\": s(r.get(\"customer_id\")).upper(),\n        \"store_id\": int(s(r.get(\"store_id\"))) if s(r.get(\"store_id\")).isdigit() else s(r.get(\"store_id\")),\n        \"employee_id\": employee,\n        \"payment_method\": payment,\n        \"order_status\": status,\n        \"product_id\": product_id or \"UNKNOWN\",\n        \"product_name\": product_name or \"Unknown\",\n        \"category\": category,\n        \"subcategory\": subcategory,\n        \"total_revenue\": rev,\n        \"total_cost\": cost,\n        \"gross_profit\": profit,\n        \"margin_pct\": round(100.0 * profit / rev, 1) if rev else 0.0,\n        \"is_completed\": completed,\n        \"net_revenue\": rev if completed else 0.0,\n        \"net_cost\": cost if completed else 0.0,\n        \"net_profit\": profit if completed else 0.0,\n        \"is_negative_margin\": profit < 0,\n        \"is_high_value\": rev >= HIGH_VALUE_THRESHOLD,\n        \"employee_missing\": emp_missing,\n    }})\n\nreturn output"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        128,
+        336
+      ],
+      "id": "45aa9b14-8f4b-4d00-845f-49aee5735f44",
+      "name": "Clean Data"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "# n8n Code node (Python) - mode: \"Run Once for All Items\"\n# Place AFTER the orders cleaning node. Output: ONE row =\n#   4 KPI values (with change vs previous month), store facts for the LLM,\n#   the best product and best store of the month, and 4 ready-made QuickChart request bodies (the 4 charts).\n# The KPI cards, chart titles and feature cards are drawn as HTML in the report node.\n# The \"latest month\" is the newest month found in the data (not today's date). No imports needed.\n\nMAX_PIE_SLICES = 6            # categories beyond this are grouped into \"Other\"\nTOP_N_SUBCATEGORIES = 5\nMIN_ORDERS_FOR_MARGIN = 10    # stores need at least this many orders to be ranked on margin\nACCENT = \"#2F5D8A\"\n# Category pie: blue + champagne gold, then coordinating colours if more categories appear.\nPALETTE = [\"#162032\", \"#E2A678\", \"#7C543F\", \"#C28961\", \"#162032\", \"#E7CCB2\"]\nOTHER_COLOR = \"#B0B7C3\"\nMONTHS = [\"Jan\", \"Feb\", \"Mar\", \"Apr\", \"May\", \"Jun\", \"Jul\", \"Aug\", \"Sep\", \"Oct\", \"Nov\", \"Dec\"]\n\ndef s(v):\n    return \"\" if v is None else str(v).strip()\n\ndef f(v):\n    try:\n        return float(v)\n    except (TypeError, ValueError):\n        return 0.0\n\ndef pct_change(new, old):\n    return round(100.0 * (new - old) / old, 1) if old else None\n\ndef money(v):\n    return format(v, \",.0f\")\n\ndef month_label(ym):\n    y, m = ym.split(\"-\")\n    return MONTHS[int(m) - 1] + \" \" + y\n\ndef days_in_month(y, m):\n    if m == 2:\n        return 29 if (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) else 28\n    return 30 if m in (4, 6, 9, 11) else 31\n\nrows = [item[\"json\"] for item in _items]\n\n# ---------- monthly totals ----------\nby_month = {}\nfor r in rows:\n    ym = s(r.get(\"year_month\"))\n    if not ym:\n        continue\n    b = by_month.setdefault(ym, {\"rev\": 0.0, \"profit\": 0.0, \"orders\": 0, \"returned\": 0, \"completed\": 0, \"cancelled\": 0, \"dates\": set()})\n    b[\"rev\"] += f(r.get(\"net_revenue\"))\n    b[\"profit\"] += f(r.get(\"net_profit\"))\n    b[\"orders\"] += 1\n    st = s(r.get(\"order_status\"))\n    if st == \"Returned\":\n        b[\"returned\"] += 1\n    elif st == \"Completed\":\n        b[\"completed\"] += 1\n    elif st == \"Cancelled\":\n        b[\"cancelled\"] += 1\n    b[\"dates\"].add(s(r.get(\"order_date\")))\n\nmonths = sorted(by_month)\nif not months:\n    return [{\"json\": {\"error\": \"No orders received\"}}]\nlatest = months[-1]\nprev = months[-2] if len(months) > 1 else None\nL = by_month[latest]\nP = by_month[prev] if prev else None\nlatest_lbl = month_label(latest)\nprev_lbl = month_label(prev) if prev else \"\"\n\ndef margin(b):\n    return round(100.0 * b[\"profit\"] / b[\"rev\"], 1) if b and b[\"rev\"] else 0.0\n\ndef ret_rate(b):\n    return round(100.0 * b[\"returned\"] / b[\"orders\"], 1) if b and b[\"orders\"] else 0.0\n\nly, lm = int(latest[:4]), int(latest[5:7])\npartial = len(L[\"dates\"]) < days_in_month(ly, lm)\n\n# ---------- group the latest month by a column ----------\ndef agg_by(key, month):\n    out = {}\n    if not month:\n        return out\n    for r in rows:\n        if s(r.get(\"year_month\")) != month:\n            continue\n        k = s(r.get(key)) or \"Unknown\"\n        a = out.setdefault(k, {\"rev\": 0.0, \"profit\": 0.0, \"orders\": 0})\n        a[\"rev\"] += f(r.get(\"net_revenue\"))\n        a[\"profit\"] += f(r.get(\"net_profit\"))\n        a[\"orders\"] += 1\n    return out\n\ndef ranked(d):\n    return sorted([(k, v) for k, v in d.items() if v[\"rev\"] > 0], key=lambda kv: -kv[1][\"rev\"])\n\ndef thousands(v):\n    return round(v / 1000.0, 1)\n\ndef title(text):\n    # The chart title is drawn in the email itself (see the report node), so it is hidden inside the image.\n    return {\"display\": False, \"text\": text}\n\ndef body(chart, width, height, bg=\"white\"):\n    \"\"\"Complete QuickChart request body - the HTTP node just sends it as-is.\"\"\"\n    return {\"version\": \"2\", \"backgroundColor\": bg, \"width\": width, \"height\": height,\n            \"devicePixelRatio\": 2, \"format\": \"png\", \"chart\": chart}\n\n# ---------- JS chart serializer (no imports, n8n Python compatible) ----------\n# QuickChart needs a string chart config if it contains JavaScript functions.\ndef to_js(value):\n    if value is None:\n        return \"null\"\n    if value is True:\n        return \"true\"\n    if value is False:\n        return \"false\"\n    if isinstance(value, str):\n        return ('\"' + value\n                .replace(\"\\\\\", \"\\\\\\\\\")\n                .replace('\"', '\\\\\"')\n                .replace(\"\\n\", \"\\\\n\")\n                .replace(\"\\r\", \"\\\\r\")\n                .replace(\"\\t\", \"\\\\t\")\n                .replace(\"\\b\", \"\\\\b\")\n                .replace(\"\\f\", \"\\\\f\")\n                .replace(\"\\u2028\", \"\\\\u2028\")\n                .replace(\"\\u2029\", \"\\\\u2029\") + '\"')\n    if isinstance(value, (int, float)):\n        return str(value)\n    if isinstance(value, (list, tuple)):\n        return \"[\" + \",\".join(to_js(v) for v in value) + \"]\"\n    if isinstance(value, dict):\n        return \"{\" + \",\".join(to_js(str(k)) + \":\" + to_js(v) for k, v in value.items()) + \"}\"\n    raise ValueError(\"Unsupported chart configuration value: \" + str(type(value)))\n\n# ---------- chart 1: net revenue by month ----------\n# The vertical gradient is evaluated by QuickChart, NOT by this Python node.\nchart_monthly = {\n    \"type\": \"line\",\n    \"data\": {\n        \"labels\": [month_label(m) for m in months],\n        \"datasets\": [{\n            \"label\": \"Net revenue (thousands)\",\n            \"data\": [thousands(by_month[m][\"rev\"]) for m in months],\n            \"borderColor\": \"#7C543F\",\n            \"borderWidth\": 3,\n            \"backgroundColor\": \"__GRADIENT__\",\n            \"pointBorderColor\": \"#7C543F\",\n            \"pointBackgroundColor\": \"#FFFFFF\",\n            \"pointBorderWidth\": 2,\n            \"pointRadius\": 3,\n            \"pointHoverRadius\": 5,\n            \"fill\": True,\n            \"lineTension\": 0.25,\n        }],\n    },\n    \"options\": {\n        \"title\": title(\"Net Revenue by Month\"),\n        \"legend\": {\"display\": False},\n        \"scales\": {\n            \"yAxes\": [{\n                \"ticks\": {\"beginAtZero\": True},\n                \"scaleLabel\": {\"display\": True, \"labelString\": \"Net revenue (thousands)\"},\n            }],\n        },\n        \"plugins\": {\"datalabels\": {\"display\": False}},\n    },\n}\n\n# Render the chart configuration as a JS string, and insert the gradient function.\n# NO `import json` or other imports; n8n's restricted Python environment allows none.\nchart_monthly_js = to_js(chart_monthly).replace(\n    '\"__GRADIENT__\"',\n    \"getGradientFillHelper('vertical', [\"\n    \"'rgba(124,84,63,0.40)',\"\n    \"'rgba(194,137,97,0.22)',\"\n    \"'rgba(226,166,120,0.08)',\"\n    \"'rgba(255,255,255,0)'\"\n    \"])\"\n)\n\n# ---------- chart 2: category pie (latest month) ----------\ncats = ranked(agg_by(\"category\", latest))\nif len(cats) > MAX_PIE_SLICES:\n    head = cats[:MAX_PIE_SLICES - 1]\n    other = sum(v[\"rev\"] for _, v in cats[MAX_PIE_SLICES - 1:])\n    cats = head + [(\"Other\", {\"rev\": other})]\ncat_total = sum(v[\"rev\"] for _, v in cats)\npie_labels = [k + \" (\" + str(round(100.0 * v[\"rev\"] / cat_total, 1)) + \"%)\" for k, v in cats] if cat_total else []\npie_colors = [OTHER_COLOR if k == \"Other\" else PALETTE[i % len(PALETTE)] for i, (k, v) in enumerate(cats)]\nchart_category = {\n    \"type\": \"pie\",\n    \"data\": {\"labels\": pie_labels,\n             \"datasets\": [{\"data\": [round(v[\"rev\"], 0) for _, v in cats], \"backgroundColor\": pie_colors}]},\n    \"options\": {\"title\": title(\"Net Revenue by Category - \" + latest_lbl),\n                \"legend\": {\"display\": True, \"position\": \"right\"},\n                \"plugins\": {\"datalabels\": {\"display\": False}}},\n}\n\n# ---------- horizontal bar helper (values shown in thousands) ----------\ndef hbar(names, values, text):\n    return {\n        \"type\": \"horizontalBar\",\n        \"data\": {\"labels\": names,\n                 \"datasets\": [{\"label\": \"Net revenue (thousands)\", \"data\": [thousands(v) for v in values],\n                               \"backgroundColor\": ACCENT}]},\n        \"options\": {\"title\": title(text), \"legend\": {\"display\": False},\n                    \"layout\": {\"padding\": {\"right\": 40}},\n                    \"scales\": {\"xAxes\": [{\"ticks\": {\"beginAtZero\": True},\n                                          \"scaleLabel\": {\"display\": True, \"labelString\": \"Net revenue (thousands)\"}}]},\n                    \"plugins\": {\"datalabels\": {\"display\": True, \"anchor\": \"end\", \"align\": \"end\",\n                                               \"color\": \"#222\", \"font\": {\"size\": 11, \"weight\": \"bold\"}}}},\n    }\n\n# ---------- rank-based solid bar colours: dark navy -> light yellow ----------\n# Each entire bar uses ONE solid colour. Lower-ranked bars become progressively lighter.\n# Colour stops are shared by the subcategory and store charts.\nRANK_BAR_PALETTE = [\n    \"#162032\",  # Dark navy\n    \"#354A68\",  # Muted navy blue\n    \"#718090\",  # Slate blue\n    \"#B8ABA0\",  # Warm taupe\n    \"#F1D88A\",  # Champagne yellow\n]\n\ndef ranked_bar_colors(count):\n    \"\"\"Return one rank-based solid colour per bar, even when there are >5 stores.\"\"\"\n    if count <= 0:\n        return []\n    if count == 1:\n        return [RANK_BAR_PALETTE[0]]\n    n_intervals = len(RANK_BAR_PALETTE) - 1\n    out = []\n    for i in range(count):\n        pos = i * n_intervals / (count - 1)\n        lo = min(int(pos), n_intervals - 1)\n        t = pos - lo\n        ca, cb = RANK_BAR_PALETTE[lo], RANK_BAR_PALETTE[lo + 1]\n        rgb = []\n        for k in (1, 3, 5):\n            a = int(ca[k:k+2], 16)\n            b = int(cb[k:k+2], 16)\n            rgb.append(format(round(a + (b - a) * t), \"02X\"))\n        out.append(\"#\" + \"\".join(rgb))\n    return out\n\n# ---------- chart 3: top 5 subcategories ----------\nsubs = ranked(agg_by(\"subcategory\", latest))[:TOP_N_SUBCATEGORIES]\nchart_subcategory = hbar([k for k, _ in subs], [v[\"rev\"] for _, v in subs],\n                         \"Top \" + str(TOP_N_SUBCATEGORIES) + \" Subcategories - \" + latest_lbl)\nchart_subcategory[\"data\"][\"datasets\"][0][\"backgroundColor\"] = ranked_bar_colors(len(subs))\nchart_subcategory[\"data\"][\"datasets\"][0][\"borderWidth\"] = 0\n\n# ---------- chart 4: stores (same rank-based solid colours) ----------\nstores = agg_by(\"store_id\", latest)\nprev_stores = agg_by(\"store_id\", prev)\nst_ranked = ranked(stores)\nchart_store = hbar([\"Store \" + k for k, _ in st_ranked], [v[\"rev\"] for _, v in st_ranked],\n                   \"Net Revenue by Store - \" + latest_lbl)\nchart_store[\"data\"][\"datasets\"][0][\"backgroundColor\"] = ranked_bar_colors(len(st_ranked))\nchart_store[\"data\"][\"datasets\"][0][\"borderWidth\"] = 0\n\n# ---------- store facts for the LLM (all numbers pre-computed here) ----------\nfacts = []\ntotal_store_rev = sum(v[\"rev\"] for _, v in st_ranked)\nif st_ranked and total_store_rev:\n    k0, v0 = st_ranked[0]\n    chg0 = pct_change(v0[\"rev\"], prev_stores.get(k0, {}).get(\"rev\", 0.0))\n    facts.append(\"Top store: Store \" + k0 + \" with \" + money(v0[\"rev\"]) + \" net revenue (\"\n                 + str(round(100.0 * v0[\"rev\"] / total_store_rev, 1)) + \"% of the month)\"\n                 + (\", \" + (\"+\" if chg0 > 0 else \"\") + str(chg0) + \"% vs \" + prev_lbl if chg0 is not None else \"\") + \".\")\n    top3 = st_ranked[:3]\n    facts.append(\"Top 3 stores (\" + \", \".join(k for k, _ in top3) + \") account for \"\n                 + str(round(100.0 * sum(v[\"rev\"] for _, v in top3) / total_store_rev, 1)) + \"% of net revenue.\")\nif prev_stores:\n    keys = set(stores) | set(prev_stores)\n    change = {k: stores.get(k, {\"rev\": 0.0})[\"rev\"] - prev_stores.get(k, {\"rev\": 0.0})[\"rev\"] for k in keys}\n    avg_prev = sum(v[\"rev\"] for v in prev_stores.values()) / len(prev_stores)\n    def describe(k):\n        pr = prev_stores.get(k, {\"rev\": 0.0})[\"rev\"]\n        pc = pct_change(stores.get(k, {\"rev\": 0.0})[\"rev\"], pr)\n        note = \" (from a low base)\" if pr < 0.25 * avg_prev else \"\"\n        return \"Store \" + k + \" (\" + (\"+\" if change[k] > 0 else \"\") + money(change[k]) + \", \" + (str(pc) + \"%\" if pc is not None else \"n/a\") + note + \")\"\n    gain = max(change, key=lambda k: change[k])\n    drop = min(change, key=lambda k: change[k])\n    facts.append(\"Biggest increase vs \" + prev_lbl + \": \" + describe(gain) + \". Biggest decrease: \" + describe(drop) + \".\")\n    declined = sum(1 for k in keys if change[k] < 0)\n    facts.append(str(declined) + \" of \" + str(len(keys)) + \" stores had lower net revenue than in \" + prev_lbl + \".\")\nelig = [(k, 100.0 * v[\"profit\"] / v[\"rev\"], v[\"orders\"]) for k, v in stores.items()\n        if v[\"orders\"] >= MIN_ORDERS_FOR_MARGIN and v[\"rev\"] > 0]\nif elig:\n    lo = min(elig, key=lambda t: t[1])\n    hi = max(elig, key=lambda t: t[1])\n    facts.append(\"Gross margin among stores with \" + str(MIN_ORDERS_FOR_MARGIN) + \"+ orders: lowest Store \" + lo[0]\n                 + \" at \" + str(round(lo[1], 1)) + \"%, highest Store \" + hi[0] + \" at \" + str(round(hi[1], 1)) + \"%.\")\n\n# =====================================================================\n# FACTS FOR THE LLM - one block per report section. All numbers are calculated here,\n# so the model only has to put them into words.\n# =====================================================================\ndef sgn(v, d=1):\n    return (\"+\" if v > 0 else \"\") + str(round(v, d))\n\ndef vs(cur, old, unit=\"%\", pts=False):\n    \"\"\"'X (+Y% vs Nov 2024)' style fragment.\"\"\"\n    if old is None:\n        return \"\"\n    ch = round(cur - old, 1) if pts else pct_change(cur, old)\n    if ch is None:\n        return \"\"\n    return \" (\" + sgn(ch) + (\" pts\" if pts else \"%\") + \" vs \" + prev_lbl + \")\"\n\ndef aov(b):\n    return b[\"rev\"] / b[\"completed\"] if b and b[\"completed\"] else 0.0\n\n# ---- KPI facts (cards) ----\nkf = []\nkf.append(\"Net revenue: \" + money(L[\"rev\"]) + vs(L[\"rev\"], P[\"rev\"] if P else None) + \".\")\nkf.append(\"Orders placed: \" + money(L[\"orders\"]) + vs(L[\"orders\"], P[\"orders\"] if P else None)\n          + \"; completed orders: \" + money(L[\"completed\"]) + (\" vs \" + money(P[\"completed\"]) if P else \"\") + \".\")\nkf.append(\"Average value of a completed order: \" + money(aov(L)) + vs(aov(L), aov(P) if P else None) + \".\")\nkf.append(\"Gross margin: \" + str(margin(L)) + \"%\" + vs(margin(L), margin(P) if P else None, pts=True)\n          + \"; net profit \" + money(L[\"profit\"]) + (\" vs \" + money(P[\"profit\"]) if P else \"\") + \".\")\nkf.append(\"Return rate: \" + str(ret_rate(L)) + \"%\" + vs(ret_rate(L), ret_rate(P) if P else None, pts=True)\n          + \"; returned orders \" + str(L[\"returned\"]) + (\" vs \" + str(P[\"returned\"]) if P else \"\")\n          + \"; cancelled orders \" + str(L[\"cancelled\"]) + (\" vs \" + str(P[\"cancelled\"]) if P else \"\") + \".\")\n\n# ---- trend facts (chart 1: net revenue by month) ----\ntf = []\nrevs = [(m, by_month[m][\"rev\"]) for m in months]\nif len(revs) >= 2:\n    hi_m = max(revs, key=lambda t: t[1]); lo_m = min(revs, key=lambda t: t[1])\n    avg_all = sum(v for _, v in revs) / len(revs)\n    rank = sorted([v for _, v in revs], reverse=True).index(L[\"rev\"]) + 1\n    tf.append(\"The chart covers \" + str(len(revs)) + \" months (\" + month_label(months[0]) + \" to \" + latest_lbl + \").\")\n    tf.append(latest_lbl + \" net revenue is \" + money(L[\"rev\"]) + \", rank \" + str(rank) + \" of \" + str(len(revs)) + \" months; \"\n              + sgn(pct_change(L[\"rev\"], avg_all)) + \"% versus the \" + str(len(revs)) + \"-month average of \" + money(avg_all) + \".\")\n    tf.append(\"Highest month: \" + month_label(hi_m[0]) + \" (\" + money(hi_m[1]) + \"). Lowest month: \" + month_label(lo_m[0]) + \" (\" + money(lo_m[1]) + \").\")\n    ups = sum(1 for i in range(1, len(revs)) if revs[i][1] > revs[i - 1][1])\n    tf.append(\"Month-on-month, revenue rose in \" + str(ups) + \" of \" + str(len(revs) - 1) + \" months. Monthly revenue is volatile, so single-month moves can be large.\")\nelse:\n    tf.append(\"Only one month of data is available, so no trend can be described.\")\n\n# ---- category facts (chart 2: pie) ----\ncf = []\ncat_now, cat_prev = agg_by(\"category\", latest), agg_by(\"category\", prev)\ncn = ranked(cat_now); cn_total = sum(v[\"rev\"] for _, v in cn)\nif cn and cn_total:\n    k0, v0 = cn[0]\n    sh0 = 100.0 * v0[\"rev\"] / cn_total\n    sh0p = None\n    if cat_prev and sum(v[\"rev\"] for v in cat_prev.values()):\n        sh0p = 100.0 * cat_prev.get(k0, {\"rev\": 0.0})[\"rev\"] / sum(v[\"rev\"] for v in cat_prev.values())\n    cf.append(\"Largest category: \" + k0 + \" with \" + money(v0[\"rev\"]) + \" (\" + str(round(sh0, 1)) + \"% of net revenue)\"\n              + (\", share \" + sgn(sh0 - sh0p) + \" pts vs \" + prev_lbl if sh0p is not None else \"\") + \".\")\n    cf.append(\"Categories ranked: \" + \"; \".join(k + \" \" + str(round(100.0 * v[\"rev\"] / cn_total, 1)) + \"%\" for k, v in cn) + \".\")\n    if cat_prev:\n        chg = {k: cat_now.get(k, {\"rev\": 0.0})[\"rev\"] - cat_prev.get(k, {\"rev\": 0.0})[\"rev\"] for k in set(cat_now) | set(cat_prev)}\n        g, d = max(chg, key=lambda k: chg[k]), min(chg, key=lambda k: chg[k])\n        cf.append(\"Biggest revenue gain vs \" + prev_lbl + \": \" + g + \" (\" + (\"+\" if chg[g] > 0 else \"\") + money(chg[g]) + \"). Biggest drop: \" + d + \" (\" + (\"+\" if chg[d] > 0 else \"\") + money(chg[d]) + \").\")\n\n# ---- sub-category facts (chart 3) ----\nsf = []\nsub_now, sub_prev = agg_by(\"subcategory\", latest), agg_by(\"subcategory\", prev)\nsn = ranked(sub_now); sn_total = sum(v[\"rev\"] for _, v in sn)\nif sn and sn_total:\n    top = sn[:TOP_N_SUBCATEGORIES]\n    sf.append(\"Top \" + str(len(top)) + \" subcategories: \" + \"; \".join(\n        k + \" \" + money(v[\"rev\"]) + \" (\" + str(round(100.0 * v[\"rev\"] / sn_total, 1)) + \"%\"\n        + ((\", \" + sgn(pct_change(v[\"rev\"], sub_prev[k][\"rev\"])) + \"% vs \" + prev_lbl)\n           if sub_prev.get(k, {\"rev\": 0.0})[\"rev\"] and pct_change(v[\"rev\"], sub_prev[k][\"rev\"]) is not None else \"\") + \")\"\n        for k, v in top) + \".\")\n    sf.append(\"Together the top \" + str(len(top)) + \" make up \" + str(round(100.0 * sum(v[\"rev\"] for _, v in top) / sn_total, 1)) + \"% of net revenue.\")\n    if len(top) > 1:\n        sf.append(\"Gap between #1 (\" + top[0][0] + \") and #2 (\" + top[1][0] + \"): \" + money(top[0][1][\"rev\"] - top[1][1][\"rev\"]) + \".\")\n\n# ---------- best product (by net revenue, latest month) ----------\ndef prod_agg(month):\n    out = {}\n    if not month:\n        return out\n    for r in rows:\n        if s(r.get(\"year_month\")) != month:\n            continue\n        pid = s(r.get(\"product_id\"))\n        if not pid or pid.upper() == \"UNKNOWN\":\n            continue\n        a = out.setdefault(pid, {\"rev\": 0.0, \"orders\": 0, \"name\": s(r.get(\"product_name\")),\n                                 \"cat\": s(r.get(\"category\")), \"sub\": s(r.get(\"subcategory\"))})\n        a[\"rev\"] += f(r.get(\"net_revenue\"))\n        if r.get(\"is_completed\") in (True, \"true\", \"True\", 1):\n            a[\"orders\"] += 1\n    return out\n\nprod_now, prod_prev = prod_agg(latest), prod_agg(prev)\nbest_product = {}\nif prod_now:\n    pid, a = max(prod_now.items(), key=lambda kv: kv[1][\"rev\"])\n    if a[\"rev\"] > 0:\n        pr = prod_prev.get(pid, {}).get(\"rev\", 0.0)\n        best_product = {\n            \"best_product_id\": pid,\n            \"best_product_name\": a[\"name\"] if a[\"name\"] and a[\"name\"] != \"Unknown\" else pid,\n            \"best_product_category\": a[\"cat\"],\n            \"best_product_subcategory\": a[\"sub\"],\n            \"best_product_orders\": a[\"orders\"],                       # completed orders containing this product\n            \"best_product_revenue\": round(a[\"rev\"], 2),\n            \"best_product_share_pct\": round(100.0 * a[\"rev\"] / L[\"rev\"], 1) if L[\"rev\"] else None,\n            \"best_product_mom_pct\": pct_change(a[\"rev\"], pr) if pr else None,\n        }\n\n# ---------- best store ----------\nbest_store = {}\nif st_ranked:\n    k0, v0 = st_ranked[0]\n    pr = prev_stores.get(k0, {}).get(\"rev\", 0.0)\n    best_store = {\n        \"best_store_id\": k0,\n        \"best_store_revenue\": round(v0[\"rev\"], 2),\n        \"best_store_orders\": v0[\"orders\"],\n        \"best_store_share_pct\": round(100.0 * v0[\"rev\"] / total_store_rev, 1) if total_store_rev else None,\n        \"best_store_mom_pct\": pct_change(v0[\"rev\"], pr) if pr else None,\n    }\n\nresult = {\n    \"report_month\": latest,\n    \"report_month_label\": latest_lbl,\n    \"prev_month_label\": prev_lbl,\n    \"first_month_label\": month_label(months[0]),\n    \"latest_month_partial\": partial,\n    \"latest_month_days\": len(L[\"dates\"]),\n\n    \"net_revenue\": round(L[\"rev\"], 2),\n    \"net_revenue_prev\": round(P[\"rev\"], 2) if P else None,\n    \"net_revenue_mom_pct\": pct_change(L[\"rev\"], P[\"rev\"]) if P else None,\n\n    \"gross_margin_pct\": margin(L),\n    \"gross_margin_prev_pct\": margin(P) if P else None,\n    \"gross_margin_change_pts\": round(margin(L) - margin(P), 1) if P else None,\n\n    \"orders\": L[\"orders\"],\n    \"orders_prev\": P[\"orders\"] if P else None,\n    \"orders_mom_pct\": pct_change(L[\"orders\"], P[\"orders\"]) if P else None,\n\n    \"return_rate_pct\": ret_rate(L),\n    \"return_rate_prev_pct\": ret_rate(P) if P else None,\n    \"return_rate_change_pts\": round(ret_rate(L) - ret_rate(P), 1) if P else None,\n\n    \"kpi_facts\": \"\\n\".join(\"- \" + x for x in kf),\n    \"trend_facts\": \"\\n\".join(\"- \" + x for x in tf),\n    \"category_facts\": \"\\n\".join(\"- \" + x for x in cf),\n    \"subcategory_facts\": \"\\n\".join(\"- \" + x for x in sf),\n    \"store_facts\": \"\\n\".join(\"- \" + x for x in facts),\n\n    # 4 chart request bodies, in the order they appear in the Merge node / email\n    \"chart_monthly\": body(chart_monthly_js, 600, 340),\n    \"chart_category\": body(chart_category, 600, 340),\n    \"chart_subcategory\": body(chart_subcategory, 600, 300),\n    \"chart_store\": body(chart_store, 600, 460),\n}\nresult.update(best_product)\nresult.update(best_store)\nreturn [{\"json\": result}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        336
+      ],
+      "id": "1457500f-0817-477e-862d-ca9c500c3a54",
+      "name": "Calculate KPIs"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a business intelligence analyst writing ultra-concise, natural commentary for an automated monthly performance email. Readers skim the report in seconds.\n\n**Writing style:**\n- ONE sentence per section, maximum 25 words. No introduction, filler, jargon or unnecessary explanations.\n- Start each insight with a meaningful business subject or descriptive phrase, NEVER a number, percentage, currency symbol or ranking.\n- Use natural business language, such as \"Revenue increased...\", \"December ranked...\", \"Clothing remained...\", or \"Store 2 led...\"\n- Lead with the most important finding, followed by 2–3 supporting figures.\n- Highlight the 2–3 most important figures using **bold** (double asterisks).\n- Place comparisons immediately after the relevant figures in parentheses, such as \"**250,000** (+12.5% vs last month)\".\n- Integrate numbers naturally into the sentence rather than listing statistics.\n- Use clear, confident, professional language suitable for senior business stakeholders.\n- Explain the main performance driver ONLY when directly supported by the facts, such as average order value versus order count.\n- Highlight meaningful movements, comparisons, rankings or risks rather than simply repeating chart values.\n- Avoid awkward phrases such as \"3rd of 12 months was the rank\" or \"267,214 came from Store 2\".\n- Do not over-interpret large percentage changes arising from small bases.\n- Use ONLY figures explicitly provided in the facts. Never invent, estimate, recalculate or assume causes.\n- Preserve all numerical values, percentages, signs and comparisons exactly as supplied.\n- If a requested figure is unavailable, omit it rather than inventing a replacement.\n- Plain text only, except **bold** markers. No HTML, emojis or bullets outside [ACTIONS].\n- Do not mention these rules, fact labels or section tags within the commentary.\n- Do not add extra sections.\n\n**Section-specific guidance:**\n- [KPI]: Begin with \"This month,\" and summarise net revenue, orders and the main performance driver.\n- [TREND]: Begin with the reporting month or \"Revenue\". Describe the month's ranking and comparison with the monthly average.\n- [CATEGORY]: Begin with the leading category name. Explain its revenue contribution and the biggest mover.\n- [SUBCATEGORY]: Begin with the leading subcategory name. Highlight its contribution and the concentration of the top five.\n- [STORE]: Begin with the leading store name. Highlight its performance, the number of declining stores and the largest decline.\n- [ACTIONS]: Write exactly three practical recommendations. Start each with an action verb, prioritising issues supported by the report.\n\nThe commentary should feel like a concise executive performance briefing, not a statistical data dump.",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=Write the monthly performance commentary for {{ $json.report_month_label }} compared with {{ $json.prev_month_label }}.\n\nKPI FACTS:\n{{ $json.kpi_facts }}\n\nTREND FACTS (net revenue by month chart):\n{{ $json.trend_facts }}\n\nCATEGORY FACTS (net revenue by category pie chart):\n{{ $json.category_facts }}\n\nSUBCATEGORY FACTS (top 5 subcategories chart):\n{{ $json.subcategory_facts }}\n\nSTORE FACTS (net revenue by store chart):\n{{ $json.store_facts }}\n\nAnswer in exactly this format, with each tag on its own line and in this order:\n\n[KPI]\nOne sentence, maximum 25 words. Start with \"This month,\" and highlight net revenue, orders, their changes and the main supported driver.\n\n[TREND]\nOne sentence, maximum 25 words. Start with the reporting month or \"Revenue\". Explain the month's ranking and comparison with the monthly average.\n\n[CATEGORY]\nOne sentence, maximum 25 words. Start with the leading category name. Highlight its revenue share and the biggest mover.\n\n[SUBCATEGORY]\nOne sentence, maximum 25 words. Start with the leading subcategory name. Explain its share and how concentrated the top five are.\n\n[STORE]\nOne sentence, maximum 25 words. Start with the leading store name. Include its revenue share, the number of declining stores and the biggest decliner.\n\n[ACTIONS]\nExactly 3 lines, each starting with \"- \", maximum 15 words per line. Start each recommendation with a verb and bold the relevant store, category or metric.\n\nIMPORTANT:\n- Every insight must begin with words, not numbers.\n- Bold 2–3 important figures in each insight where available.\n- Use only the supplied facts without inventing or recalculating figures.\n- Keep the output concise, natural and decision-focused.\n- Return only the six tagged sections with no additional explanation."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        784,
+        48
+      ],
+      "id": "15d88513-7839-4617-aeec-63af3b0bb70f",
+      "name": "AI Insights"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={{ $json.chart_monthly }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        848,
+        432
+      ],
+      "id": "c7f89cc0-6202-4476-9019-695d41aa157a",
+      "name": "Chart 1: Monthly Trend"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "# n8n Code node (Python) - mode: \"Run Once for All Items\"   (this is Code2, after the Merge node)\n# Builds ONE email-ready HTML report, in this order:\n#   ONE joined Hero + KPI section -> Best product -> Best store\n#   -> 4 white chart cards, no blue wrapper -> Navy Actions -> Yellow Footer\n#\n# Merge node inputs (append mode, 6 inputs), in this order:\n#   Input 1    = Basic LLM Chain (item has \"text\")\n#   Inputs 2-5 = the 4 chart images (items have \"url\"): net revenue by month, by category,\n#                top 5 subcategories, net revenue by store\n#   Input 6    = KPI Code node (item has \"report_month\")\n#\n# The LLM answers in tagged sections: [KPI] [TREND] [CATEGORY] [SUBCATEGORY] [STORE] [ACTIONS].\n# Email-safe table structure; glass and fade are PRE-RENDERED into background PNGs.\n# In clients that don't render background photos (e.g. some desktop Outlook versions),\n# fallback solid colours remain readable. No imports or external libraries needed.\n\n# ======================= SETTINGS - edit these =======================\nREPORT_TITLE = \"Monthly Performance Report\"     # email subject\nHERO_LABEL = \"BUSINESS PERFORMANCE\"\nHERO_TITLE = \"Monthly Report\"\nBRAND_NAME = \"Lotus Group\"                        # visible text in hero/footer\nBRAND_LOGO_URL = \"\"                             # Paste direct Cloudinary PNG URL when ready; blank = text only\nHERO_DESCRIPTION = \"A snapshot of your store performance, insights and key trends.\"\nKPI_SUMMARY_PREFIX = \"This month,\"                 # For a MONTHLY report, consider \"This month,\" instead\nCURRENCY = \"$\"                                   # e.g. \"$\" or \"EGP \" - shown before money figures\n# IMPORTANT: URLs must directly serve a public PNG/JPG image over HTTPS.\n# Upload the bundled \"email_*\" PNGs to a publicly accessible image host/CDN.\n# For HERO, use email_hero_kpi_extended.png (photo fades into blue behind the KPIs).\n# For PRODUCT / STORE, use the PRE-BLENDED photos (dark fade baked into pixels).\n# KPI and charts have no shared frosted-glass outer panel.\n# NOTE: Chart line/fill/slice colours are generated by your UPSTREAM QuickChart nodes,\n#       not in this email assembly node (which receives only image URLs).\n# You can temporarily keep your existing Drive links for testing, but Drive preview URLs\n# and even Drive's uc?export=view endpoints can fail in email clients. Prefer a proper CDN.\nHERO_IMAGE_URL = \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793524353/Luxury_Winter_Boutique_Electronics_Display.png\"  # REPLACE with direct URL of email_hero_kpi_extended.png\nPRODUCT_IMAGE_URL = \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793525494/lotus_product_feature_background.png\"  # REPLACE with email_product_blended.png URL\nSTORE_IMAGE_URL = \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793597075/lotus_store_feature_background.jpg\"  # REPLACE with email_store_blended.png URL\n# =====================================================================\n\nNAVY, MUTED, INK = \"#10214B\", \"#5B6B8C\", \"#0B1220\"\nGOOD, BAD, FLAT = \"#16A34A\", \"#DC2626\", \"#64748B\"\nLINE = \"#DCE6F5\"\nFONT = \"Inter,Arial,Helvetica,sans-serif\"\n\nCHART_TAGS = [\"TREND\", \"CATEGORY\", \"SUBCATEGORY\", \"STORE\"]       # insight shown under chart 1..4\n\n# ---------------------------- helpers ----------------------------\ndef esc(v):\n    return (str(v).replace(\"&\", \"&amp;\").replace(\"<\", \"&lt;\")\n            .replace(\">\", \"&gt;\").replace('\"', \"&quot;\"))\n\ndef strip_tags(t):\n    out, depth = [], 0\n    for ch in str(t):\n        if ch == \"<\":\n            depth += 1\n        elif ch == \">\" and depth:\n            depth -= 1\n        elif not depth:\n            out.append(ch)\n    return \"\".join(out)\n\ndef clean_line(t):\n    return strip_tags(t).replace(\"__\", \"\").replace(\"`\", \"\").strip()\n\ndef rich(text, strong_style=\"font-weight:700;\"):\n    \"\"\"Escape the text, then turn **bold** markers into <strong>. Unbalanced markers are dropped.\"\"\"\n    parts = esc(text).split(\"**\")\n    if len(parts) % 2 == 0:\n        parts = [\"\".join(parts)]\n    parts = [p.replace(\"*\", \"\") for p in parts]\n    return \"\".join(p if i % 2 == 0 else '<strong style=\"' + strong_style + '\">' + p + \"</strong>\"\n                   for i, p in enumerate(parts))\n\ndef fnum(v, decimals=0):\n    if v is None or v == \"\":\n        return \"-\"\n    return format(float(v), \",.\" + str(decimals) + \"f\")\n\ndef url_ok(u):\n    return str(u).strip().startswith(\"http\")\n\ndef lucide_icon(name, size=24):\n    url = ICON_URLS.get(name, \"\")\n\n    if not url_ok(url):\n        return \"\"\n\n    return (\n        '<img src=\"' + esc(url) + '\" '\n        'width=\"' + str(size) + '\" '\n        'height=\"' + str(size) + '\" '\n        'alt=\"\" '\n        'style=\"display:inline-block;'\n        'width:' + str(size) + 'px;'\n        'height:' + str(size) + 'px;'\n        'vertical-align:middle;border:0;\">'\n    )\n\ndef brand_logo(size=24):\n    \"\"\"Email-safe, optional Lotus Group logo. Empty URL means no icon.\"\"\"\n    if not url_ok(BRAND_LOGO_URL):\n        return \"\"\n    return (\n        '<img src=\"' + esc(BRAND_LOGO_URL) + '\" width=\"' + str(size) + '\" '\n        'height=\"' + str(size) + '\" alt=\"\" '\n        'style=\"display:block;width:' + str(size) + 'px;height:' + str(size) + 'px;'\n        'border:0;object-fit:contain;\">'\n    )\n\ndef css_url(u):\n    return str(u).strip().replace(\"'\", \"%27\").replace('\"', \"%22\").replace(\"&\", \"&amp;\")\n\ndef direct_url(u):\n    \"\"\"Convert common Google Drive *preview* links to image endpoints.\n    Drive still sometimes blocks hotlinking: a public CDN URL is recommended.\n    \"\"\"\n    u = str(u or \"\").strip()\n    if \"drive.google.com/file/d/\" in u:\n        fid = u.split(\"/file/d/\", 1)[1].split(\"/\", 1)[0].split(\"?\", 1)[0]\n        if fid:\n            return \"https://drive.google.com/uc?export=view&id=\" + fid\n    return u\n\nHERO_IMAGE_URL = direct_url(HERO_IMAGE_URL)\nPRODUCT_IMAGE_URL = direct_url(PRODUCT_IMAGE_URL)\nSTORE_IMAGE_URL = direct_url(STORE_IMAGE_URL)\n\nICON_URLS = {\n    \"revenue\": \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793424147/wallet-3.png\",\n    \"margin\": \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793424563/percent.png\",\n    \"orders\": \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793424559/shopping-bag.png\",\n    \"returns\": \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793424556/rotate-ccw.png\",\n    \"product\": \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793424583/crown.png\",\n    \"store\": \"https://res.cloudinary.com/q8q8gpln/image/upload/v1793424579/store.png\",\n}\n\n# ---------------------------- 1. inputs ----------------------------\nkpi, llm_text, charts = {}, \"\", []\nfor item in _items:\n    j = item[\"json\"]\n    if \"report_month\" in j:\n        kpi = j\n    elif j.get(\"text\") or j.get(\"output\"):\n        llm_text = str(j.get(\"text\") or j.get(\"output\"))\n    elif j.get(\"url\"):\n        charts.append(direct_url(j[\"url\"]))\n\nmonth = kpi.get(\"report_month_label\", \"\")\nprev_label = kpi.get(\"prev_month_label\", \"\")\nfirst_label = kpi.get(\"first_month_label\", \"\")\n\n# ---------------------------- 2. parse the LLM's tagged sections ----------------------------\nsections, order, current = {}, [], None\nfor raw in llm_text.replace(\"\\r\", \"\").split(\"\\n\"):\n    line = raw.strip().strip(\"*#` \").strip()\n    if line.startswith(\"[\") and line.endswith(\"]\") and 1 < len(line) < 30:\n        current = line[1:-1].strip().upper().replace(\" \", \"_\")\n        sections[current] = []\n        order.append(current)\n    elif current is not None and not raw.strip().startswith(\"```\"):\n        sections[current].append(raw)\n\ndef paragraph(tag):\n    return \" \".join(clean_line(x) for x in sections.get(tag, []) if clean_line(x))\n\ndef bullets(tag):\n    items = []\n    for x in sections.get(tag, []):\n        t = clean_line(x)\n        if not t:\n            continue\n        if t[0] in \"-*•\":\n            t = t[1:].strip()\n        elif t[0].isdigit() and \".\" in t[:3]:\n            t = t[t.index(\".\") + 1:].strip()\n        elif items:\n            items[-1] += \" \" + t\n            continue\n        items.append(t)\n    return items\n\nparsed_ok = any(t in sections for t in [\"KPI\"] + CHART_TAGS + [\"ACTIONS\"])\n\n# ---------------------------- 3. building blocks ----------------------------\ndef spacer(h=16):\n    return '<tr><td height=\"' + str(h) + '\" style=\"font-size:0;line-height:0;\">&nbsp;</td></tr>'\n\ndef plain_heading(title, meta=\"\", title_color=None):\n    \"\"\"Two-column section title without an icon or icon placeholder.\"\"\"\n    title_color = title_color or NAVY\n    return (\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">'\n        '<tr><td valign=\"middle\" style=\"font-family:' + FONT + ';font-size:18px;'\n        'font-weight:800;color:' + title_color + ';\">' + esc(title) + '</td>'\n        '<td align=\"right\" valign=\"middle\" style=\"font-family:' + FONT + ';'\n        'font-size:12px;color:' + MUTED + ';\">' + esc(meta) + '</td>'\n        '</tr></table>'\n    )\n\n\ndef plain_kpi_summary(text):\n    \"\"\"Plain KPI insight, with a configurable natural-language opening.\"\"\"\n    if not text:\n        return \"\"\n    content = str(text).strip()\n    prefix = KPI_SUMMARY_PREFIX.strip()\n    if prefix and not content.lower().startswith(prefix.rstrip(',').lower()):\n        content = prefix + \" \" + content\n    return (\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n        'style=\"margin-top:12px;\"><tr><td '\n        'style=\"padding:8px 6px 4px;font-family:' + FONT + ';font-size:14px;'\n        'line-height:1.65;color:' + NAVY + ';\">'\n        + rich(content, \"font-weight:750;color:#10214B;\") + '</td></tr></table>'\n    )\n\n\ndef strip_box(text):\n    \"\"\"Dark chart-insight strip without a lightbulb/icon.\"\"\"\n    if not text:\n        return \"\"\n    return (\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n        'style=\"margin-top:12px;\"><tr><td bgcolor=\"' + INK + '\" '\n        'style=\"background:' + INK + ';border-radius:14px;padding:14px 18px;'\n        'font-family:' + FONT + ';font-size:14px;line-height:22px;color:#DCE5F5;\">'\n        + rich(text, \"font-weight:700;color:#FFFFFF;\") + '</td></tr></table>'\n    )\n\ndef trend(change, unit, lower_is_better=False):\n    \"\"\"Return arrow, change figure, plain comparison label, and semantic colour.\"\"\"\n    if change in (None, \"\"):\n        return \"\", \"\", \"no previous month\", FLAT\n    v = float(change)\n    if v == 0:\n        return \"&#9654;\", \"0.0\" + unit, \"vs \" + prev_label, FLAT\n    good = (v < 0) if lower_is_better else (v > 0)\n    arrow = \"&#8599;\" if v > 0 else \"&#8600;\"\n    amount = (\"+\" if v > 0 else \"\") + format(v, \".1f\") + unit\n    return arrow, amount, \"vs \" + prev_label, (GOOD if good else BAD)\n\ndef kpi_card(glyph, icon_bg, glyph_color, label, value, change, unit, lower_is_better=False):\n    arrow, amount, comparison, color = trend(change, unit, lower_is_better)\n    return ('<td class=\"stack\" width=\"50%\" valign=\"top\" style=\"padding:6px;\">'\n            '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n            'style=\"background-color:#F9FCFF;background:rgba(255,255,255,0.68);border:1px solid rgba(255,255,255,0.92);border-radius:10px;box-shadow:0 3px 12px rgba(45,80,140,0.07);\">'\n            '<tr><td style=\"padding:16px 16px;\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr>'\n            '<td width=\"58\" valign=\"middle\"><div style=\"width:46px;height:46px;line-height:46px;border-radius:23px;background:' + icon_bg\n            + ';text-align:center;font-size:21px;font-weight:700;color:' + glyph_color + ';\">' + glyph + '</div></td>'\n            '<td valign=\"middle\" style=\"font-family:' + FONT + ';\">'\n            '<div style=\"font-size:13px;color:' + MUTED + ';\">' + label + '</div>'\n            '<div style=\"font-size:28px;font-weight:800;color:' + NAVY + ';line-height:1.15;margin:2px 0;\">' + value + '</div>'\n            '<div style=\"font-size:12.5px;color:' + color + ';\">'\n            + ('<strong style=\"font-weight:700;\">' + arrow + ' ' + esc(amount) + '</strong> ' if amount else '')\n            + '<span style=\"font-weight:400;\">' + esc(comparison) + '</span></div>'\n            '</td></tr></table></td></tr></table></td>')\n\ndef feature_card(icon, label, heading, body_html, image_url, image_left):\n    \"\"\"ONE full-width pre-blended image behind HTML text (not two hard-split cells).\n\n    The baked image MUST already fade into #0B1220 on the text side:\n      - product: text LEFT, photo RIGHT\n      - store: photo LEFT, text RIGHT\n    \"\"\"\n    has_bg = url_ok(image_url)\n    attr = ' background=\"' + esc(image_url) + '\"' if has_bg else ''\n    bg_css = (\"background-image:url('\" + css_url(image_url) + \"');\"\n              \"background-size:cover;background-position:center;\"\n              \"background-repeat:no-repeat;\") if has_bg else \"\"\n\n    # Only one text column; the other is intentional empty image space.\n    # The glass/dark fade comes from the baked background, not a white cell.\n    text_td = (\n        '<td class=\"feature-text\" width=\"57%\" valign=\"middle\" '\n        'style=\"padding:30px 27px;font-family:' + FONT + ';\">'\n        '<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\"><tr>'\n        '<td width=\"44\"><div style=\"width:34px;height:34px;line-height:34px;'\n        'border-radius:9px;background:transparent;border:1px solid #FFFFFF;'\n        'text-align:center;font-size:17px;color:#FFFFFF;\">' + icon + '</div></td>'\n        '<td style=\"font-size:10px;letter-spacing:2.5px;color:#BCCBDD;\">'\n        + esc(label) + '</td></tr></table>'\n        '<div style=\"font-size:27px;font-weight:800;color:#FFFFFF;'\n        'margin:13px 0 11px;line-height:1.15;\">' + esc(heading) + '</div>'\n        '<div style=\"font-size:14px;line-height:1.65;color:#E2E9F2;\">'\n        + body_html + '</div></td>'\n    )\n    image_space = '<td class=\"feature-image-space\" width=\"43%\" style=\"font-size:0;line-height:0;\">&nbsp;</td>'\n    cells = (image_space + text_td) if image_left else (text_td + image_space)\n    return (\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n        'style=\"border-radius:22px;overflow:hidden;background:#0B1220;\">'\n        '<tr><td' + attr + ' bgcolor=\"#0B1220\" '\n        'style=\"background-color:#0B1220;' + bg_css + 'border-radius:22px;\">'\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">'\n        '<tr>' + cells + '</tr></table>'\n        '</td></tr></table>'\n    )\n\ndef money(v):\n    return esc(CURRENCY) + fnum(v)\n\ndef bold(t):\n    return '<strong style=\"color:#FFFFFF;font-weight:700;\">' + esc(t) + '</strong>'\n\ndef delta_sentence(pct):\n    if pct in (None, \"\"):\n        return \"\"\n    v = float(pct)\n    return \" Revenue was \" + bold((\"+\" if v > 0 else \"\") + format(v, \".1f\") + \"%\") + \" vs \" + esc(prev_label) + \".\"\n\n# ---------------------------- 4. sections ----------------------------\n# --- key metrics (assembled FIRST so they can be placed INSIDE the hero) ---\nkpi_inner = \"\"\nif kpi:\n    kpi_inner = (\n        plain_heading(\"Key metrics\", (month + \" vs \" + prev_label) if prev_label else month, \"#FFFFFF\")\n        + '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin-top:10px;\"><tr>'\n        + kpi_card(lucide_icon(\"revenue\", 24), \"#000000\", \"#FFFFFF\", \"Net Revenue\", money(kpi.get(\"net_revenue\")), kpi.get(\"net_revenue_mom_pct\"), \"%\")\n        + kpi_card(lucide_icon(\"margin\", 24), \"#000000\", \"#FFFFFF\", \"Gross Margin\", fnum(kpi.get(\"gross_margin_pct\"), 1) + \"%\", kpi.get(\"gross_margin_change_pts\"), \" pts\")\n        + '</tr><tr>'\n        + kpi_card(lucide_icon(\"orders\", 24), \"#000000\", \"#FFFFFF\", \"Total Orders\", fnum(kpi.get(\"orders\")), kpi.get(\"orders_mom_pct\"), \"%\")\n        + kpi_card(lucide_icon(\"returns\", 24), \"#000000\", \"#FFFFFF\", \"Return Rate\", fnum(kpi.get(\"return_rate_pct\"), 1) + \"%\", kpi.get(\"return_rate_change_pts\"), \" pts\", lower_is_better=True)\n        + '</tr></table>'\n    )\n    if kpi.get(\"latest_month_partial\"):\n        kpi_inner += ('<div style=\"background:#FFF4E5;border-radius:8px;padding:8px 12px;'\n                      'font-family:' + FONT + ';font-size:12px;color:#92400E;margin-top:10px;\">'\n                      'Note: ' + esc(month) + ' only has ' + esc(kpi.get(\"latest_month_days\"))\n                      + ' days of data, so comparisons with ' + esc(prev_label)\n                      + ' are not like-for-like.</div>')\n    if parsed_ok:\n        kpi_inner += plain_kpi_summary(paragraph(\"KPI\"))\n    else:\n        fallback = \" \".join(clean_line(x) for x in llm_text.split(\"\\n\") if clean_line(x))\n        kpi_inner += plain_kpi_summary(fallback or \"No insights were generated.\")\n\nkpi_panel = kpi_inner  # No separate pale-blue/glass container around the four KPI cards\n\n# --- ONE unified hero container; KPI heading and four cards sit directly on the hero image ---\n# A taller pre-composed background (email_hero_kpi_extended.png) is recommended:\n# photo at the top, fading to pale blue behind the KPI panel.\nif url_ok(HERO_IMAGE_URL):\n    hero_bg = (\n        \"background-color:#E9F1FC;\"\n        \"background-image:url('\" + css_url(HERO_IMAGE_URL) + \"');\"\n        \"background-size:cover;background-position:center top;\"\n        \"background-repeat:no-repeat;\"\n    )\n    hero_attr = ' background=\"' + esc(HERO_IMAGE_URL) + '\"'\nelse:\n    hero_bg = 'background-color:#17273F;'\n    hero_attr = \"\"\n\nhero_fallback_colour = \"#E9F1FC\" if url_ok(HERO_IMAGE_URL) else \"#17273F\"\n\n\n\nbrand_row = (\n    '<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\"><tr>'\n    + ('<td width=\"32\" valign=\"middle\">' + brand_logo(24) + '</td>' if url_ok(BRAND_LOGO_URL) else '')\n    + '<td valign=\"middle\" style=\"font-family:' + FONT + ';font-size:14px;'\n    'color:#FFFFFF;font-weight:400;\">' + esc(BRAND_NAME) + '</td>'\n    '</tr></table>'\n) if BRAND_NAME else \"&nbsp;\"\n\nhero_kpi_html = (\n    '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n    'style=\"border-radius:0px;overflow:hidden;background:#E9F1FC;\">'\n    '<tr><td' + hero_attr + ' bgcolor=\"' + hero_fallback_colour + '\" '\n    'style=\"' + hero_bg + 'border-radius:0px;\" valign=\"top\">'\n    '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">'\n    # Brand/logo\n    '<tr><td class=\"pad\" style=\"padding:20px 26px 0;\">' + brand_row + '</td></tr>'\n    # Heading, aligned with the left edge of the KPI panel below\n    '<tr><td class=\"pad\" style=\"padding:42px 26px 39px;\">'\n    '<div style=\"font-family:' + FONT + ';font-size:11px;letter-spacing:3px;'\n    'color:#D5E2F4;font-weight:700;\">' + esc(HERO_LABEL) + '</div>'\n    '<div class=\"h1\" style=\"font-family:' + FONT + ';font-size:38px;font-weight:800;'\n    'color:#FFFFFF;line-height:1.1;margin:9px 0 6px;\">' + esc(HERO_TITLE) + '</div>'\n    '<div style=\"font-family:' + FONT + ';font-size:19px;color:#FFFFFF;\">'\n    + esc(month) + '</div>'\n    '<div style=\"font-family:' + FONT + ';font-size:12px;line-height:1.55;'\n    'color:#E4EBF7;margin-top:14px;max-width:360px;\">'\n    + esc(HERO_DESCRIPTION) + '</div>'\n    '</td></tr>'\n    # KPIs are direct children of the hero background, without an enclosing blue panel\n    '<tr><td class=\"pad\" style=\"padding:16px 26px 26px;\">'\n    + kpi_panel + '</td></tr>'\n    '</table></td></tr></table>'\n)\n\n# --- best product ---\nproduct_html = \"\"\nif kpi.get(\"best_product_name\"):\n    body = (\"The \" + bold(kpi.get(\"best_product_name\")) + \" was your top performer in \" + esc(month) + \", with \"\n            + bold(fnum(kpi.get(\"best_product_orders\")) + \" orders\") + \", generating \" + bold(money(kpi.get(\"best_product_revenue\")))\n            + \" in net revenue and accounting for \" + bold(fnum(kpi.get(\"best_product_share_pct\"), 1) + \"%\") + \" of the total.\"\n            + delta_sentence(kpi.get(\"best_product_mom_pct\")))\n    product_heading = str(kpi.get(\"best_product_name\") or \"Top product\")\n    product_html = feature_card(lucide_icon(\"product\", 24), \"TOP PRODUCT\", product_heading, body,\n                                PRODUCT_IMAGE_URL if url_ok(PRODUCT_IMAGE_URL) else \"\", image_left=False)\n\n# --- best store ---\nstore_html = \"\"\nif kpi.get(\"best_store_id\") not in (None, \"\") or kpi.get(\"best_store_name\"):\n    # Prefer a real store name when the upstream KPI node supplies one.\n    store_id = str(kpi.get(\"best_store_id\") or \"\").strip()\n    store_heading = str(kpi.get(\"best_store_name\") or \"\").strip()\n    if not store_heading:\n        store_heading = store_id if store_id.lower().startswith(\"store \") else \"Store \" + store_id\n    body = (bold(store_heading) + \" was \" + esc(month) + \"'s top-performing location, generating \"\n            + bold(money(kpi.get(\"best_store_revenue\"))) + \" in net revenue, \" + bold(fnum(kpi.get(\"best_store_share_pct\"), 1) + \"%\")\n            + \" of the month's total.\" + delta_sentence(kpi.get(\"best_store_mom_pct\")))\n    store_html = feature_card(lucide_icon(\"store\", 24), \"TOP STORE\", store_heading, body,\n                              STORE_IMAGE_URL if url_ok(STORE_IMAGE_URL) else \"\", image_left=True)\n\n# --- four independent PURE-WHITE chart cards on a medium cool-grey Performance section ---\nCARD_META = [\n    (\"Net revenue by month\", (first_label + \" - \" + month) if first_label else month),\n    (\"Net revenue by category\", month),\n    (\"Top 5 subcategories\", month),\n    (\"Net revenue by store\", month),\n]\n\ndef chart_panel(i, url):\n    \"\"\"Individual white chart card, plain heading and icon-free dark insight.\"\"\"\n    ttl, meta = CARD_META[i] if i < len(CARD_META) else (\"Chart \" + str(i + 1), month)\n    insight = paragraph(CHART_TAGS[i]) if (parsed_ok and i < len(CHART_TAGS)) else \"\"\n    return (\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n        'bgcolor=\"#FFFFFF\" style=\"background:#FFFFFF;border:1px solid #E6EAF0;'\n        'border-radius:16px;\">'\n        '<tr><td style=\"padding:16px;\">'\n        + plain_heading(ttl, meta)\n        + '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n        'bgcolor=\"#FFFFFF\" style=\"margin-top:11px;background:#FFFFFF;border-radius:12px;\">'\n        '<tr><td align=\"center\" style=\"padding:8px 0;\">'\n        '<img src=\"' + esc(url) + '\" width=\"570\" alt=\"' + esc(ttl) + '\" '\n        'style=\"display:block;width:100%;max-width:570px;height:auto;border:0;margin:0 auto;\">'\n        '</td></tr></table>'\n        + strip_box(insight)\n        + '</td></tr></table>'\n    )\n\ncharts_html = \"\"\nif charts:\n    # Medium cool-grey section background; individual chart cards stay pure white.\n    # Centred, larger section heading with increased spacing above the charts.\n    # The two 18% side columns keep the heading centred while the month stays right-aligned.\n    chart_rows = (\n        '<tr><td style=\"padding:48px 18px 26px;\">'\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">'\n        '<tr>'\n        '<td width=\"18%\" style=\"width:18%;font-size:0;line-height:0;\">&nbsp;</td>'\n        '<td width=\"64%\" align=\"center\" valign=\"middle\" '\n        'style=\"width:64%;font-family:' + FONT + ';font-size:28px;'\n        'line-height:36px;font-weight:800;color:' + NAVY + ';text-align:center;\">'\n        'PERFORMANCE INSIGHTS'\n        '</td>'\n        '<td width=\"18%\" align=\"right\" valign=\"middle\" '\n        'style=\"width:18%;font-family:' + FONT + ';font-size:16px;'\n        'color:' + MUTED + ';text-align:right;white-space:nowrap;\">'\n        + esc(month) +\n        '</td>'\n        '</tr></table>'\n        '</td></tr>'\n    )\n    for i, url in enumerate(charts):\n        chart_rows += (\n            '<tr><td style=\"padding:0 18px 16px;\">'\n            + chart_panel(i, url) + '</td></tr>'\n        )\n    charts_html = (\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n        'bgcolor=\"#E5E5E5\" style=\"background-color:#E5E5E5;\">'\n        + chart_rows + '</table>'\n    )\n\n# --- dark navy Recommended Actions section (no pale-blue container or icon) ---\nactions = bullets(\"ACTIONS\") if parsed_ok else []\nactions_html = \"\"\nif actions:\n    rows_html = \"\".join(\n        '<tr>'\n        '<td width=\"42\" valign=\"top\" style=\"padding:9px 0;\">'\n        '<span style=\"display:inline-block;width:30px;height:30px;line-height:30px;'\n        'border-radius:50%;background:#FFFFFF;color:#0B1220;font-family:' + FONT + ';'\n        'font-size:13px;font-weight:800;text-align:center;\">' + str(n + 1) + '</span></td>'\n        '<td valign=\"middle\" style=\"padding:9px 0 9px 5px;font-family:' + FONT + ';'\n        'font-size:14px;line-height:1.65;color:#E6EDF7;\">'\n        + rich(a, \"font-weight:700;color:#FFFFFF;\") + '</td></tr>'\n        for n, a in enumerate(actions)\n    )\n    actions_html = (\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" '\n        'bgcolor=\"#0B1220\" style=\"background:#0B1220;border-radius:0;\">'\n        '<tr><td style=\"padding:27px 28px 30px;\">'\n        '<div style=\"font-family:' + FONT + ';font-size:22px;line-height:1.3;'\n        'font-weight:800;color:#FFFFFF;margin-bottom:15px;\">Recommended actions</div>'\n        '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">'\n        + rows_html + '</table></td></tr></table>'\n    )\n\n# ---------------------------- 5. assemble ----------------------------\nfeature_section = (\n    '<table role=\"presentation\" width=\"100%\" '\n    'cellpadding=\"0\" cellspacing=\"0\" '\n    'style=\"background:#000000;border-radius:0px;\">'\n    '<tr><td style=\"padding:20px;\">'\n    + product_html\n    + '<div style=\"height:16px;line-height:16px;\">&nbsp;</div>'\n    + store_html\n    + '</td></tr></table>'\n)\n\nparts = [hero_kpi_html, feature_section, charts_html, actions_html]\n\nbody_rows = \"\"\n\nfor i, p in enumerate(parts):\n    if not p:\n        continue\n\n    body_rows += '<tr><td>' + p + '</td></tr>'\n\n    # Join Performance Insights directly to Recommended Actions (no white spacer).\n\n# Soft yellow Lotus Group footer, full width (same width as the report).\nfooter = (\n    '<tr><td align=\"center\" bgcolor=\"#F1D88A\" '\n    'style=\"padding:24px 24px 22px;background-color:#F1D88A;font-family:' + FONT + ';\">'\n    + ('<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" align=\"center\" '\n       'style=\"margin:0 auto 8px;\"><tr>'\n       + ('<td width=\"32\" valign=\"middle\">' + brand_logo(24) + '</td>' if url_ok(BRAND_LOGO_URL) else '')\n       + '<td valign=\"middle\" style=\"font-size:16px;font-weight:400;color:#0B1220;\">'\n       + esc(BRAND_NAME) + '</td></tr></table>' if BRAND_NAME else '')\n    + '<div style=\"font-size:11px;line-height:1.65;color:#25324A;\">'\n    'Monthly Performance Intelligence &middot; ' + esc(month) + '<br>'\n'Automatically generated for internal performance monitoring'\n    '</div></td></tr>'\n)\n\nhtml = (\n    '<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">'\n    '<style>@media only screen and (max-width:640px){.wrap{width:100%!important}.stack{display:block!important;width:100%!important;box-sizing:border-box!important}.hpanel{width:100%!important}'\n    '.pad{padding-left:16px!important;padding-right:16px!important}.h1{font-size:30px!important}.feature-image-space{display:none!important}.feature-text{display:block!important;width:auto!important;padding:25px!important}}</style></head>'\n    '<body style=\"margin:0;padding:0;background:#FFFFFF;font-family:' + FONT + ';color:' + NAVY + ';\">'\n    '<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" bgcolor=\"#FFFFFF\"><tr><td align=\"center\" style=\"padding:20px 10px;\">'\n    '<table role=\"presentation\" class=\"wrap\" width=\"680\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:680px;max-width:100%;\">'\n    + body_rows + footer +\n    '</table></td></tr></table></body></html>'\n)\n\nsubject = REPORT_TITLE + (\" - \" + month if month else \"\")\nreturn [{\"json\": {\"subject\": subject, \"html\": html, \"chart_count\": len(charts), \"kpis_found\": bool(kpi),\n                  \"insights_parsed\": parsed_ok, \"sections_found\": order, \"html_size_kb\": round(len(html) / 1024.0, 1)}}]"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        384
+      ],
+      "id": "40a8930c-59ea-421d-a54d-6e2de296d362",
+      "name": "Build HTML Report"
+    },
+    {
+      "parameters": {
+        "sendTo": "xuananh180615@gmail.com",
+        "subject": "Lotus Group | Monthly Performance Report – December 2024",
+        "message": "=Dear Executive Team,\n\nPlease find below the December 2024 performance report, covering key business KPIs, revenue trends, product and store performance, and actionable recommendations.\n\nThe report highlights notable developments and priorities for management consideration.\n\n{{ $json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1808,
+        384
+      ],
+      "id": "1537ffae-ef43-4b78-ac73-525d2975b409",
+      "name": "Send Email",
+      "webhookId": "f9bd57ae-2ded-43df-995d-f8956125102d",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "7cHcrmIeMX5CRjM7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={{ $json.chart_category }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        848,
+        608
+      ],
+      "id": "c7206dac-ff73-43a0-bed8-b2b9af0927c9",
+      "name": "Chart 2: Revenue by Category"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={{ $json.chart_subcategory }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        848,
+        800
+      ],
+      "id": "d1d2d2fb-2bcd-4bf1-b9b7-f7aaf67ccdbd",
+      "name": "Chart 3: Top 5 Subcategories"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://quickchart.io/chart/create",
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={{ $json.chart_store }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        848,
+        992
+      ],
+      "id": "e7b69403-be88-4ac4-87c7-71eca6824686",
+      "name": "Chart 4: Store Revenue Ranking"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Insights",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Build HTML Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Raw Data from Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "Clean Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate KPIs": {
+      "main": [
+        [
+          {
+            "node": "AI Insights",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Chart 1: Monthly Trend",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Chart 2: Revenue by Category",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Chart 3: Top 5 Subcategories",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Chart 4: Store Revenue Ranking",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "AI Insights": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chart 1: Monthly Trend": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build HTML Report": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chart 2: Revenue by Category": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Chart 3: Top 5 Subcategories": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Chart 4: Store Revenue Ranking": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "444eeee6-18af-4705-98ec-bfba411f92d9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "15b33a7b22fe3f1d7701703e2ed24da4369245a1b1433679e38cd703046a161d"
+  },
+  "nodeGroups": [],
+  "id": "NCVojCTkMr4QiY6R",
+  "tags": []
+}
