@@ -2,7 +2,7 @@
 
 **An end-to-end pipeline that turns raw retail sales data into a designed monthly performance email, with no manual work.**
 
-![Email report and n8n workflow](image/email_preview_and_workflow.png)
+![Email report and n8n workflow](email_preview_and_workflow.png)
 
 *Left and centre: the email the pipeline sends. Right: the n8n workflow behind it.*
 
