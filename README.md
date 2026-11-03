@@ -52,7 +52,7 @@ Code (Python): Calculate KPIs  ----> facts for the LLM + 4 chart configs
 
 **Metrics are defined carefully.** Net revenue counts Completed orders only. Return rate is Returned orders over all orders. Margin and return rate changes are shown in percentage points, not percent. The report compares the latest month in the data with the one before it, and flags a partial month.
 
-**The email is built for real inboxes.** Table-based HTML with inline CSS, a mobile layout, fallbacks for gradients and transparency, and a size far below Gmail's clipping limit. Charts are images from QuickChart because email can't run JavaScript.
+**The email is built for real inboxes.** Table-based HTML with inline CSS, fallbacks for gradients and transparency, and a size far below Gmail's clipping limit. Charts are images from QuickChart because email can't run JavaScript.
 
 ## Data cleaning
 
